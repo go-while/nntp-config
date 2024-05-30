@@ -3,7 +3,13 @@ package config
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+	"time"
+)
+
+var (
+	RamCache RAM
 )
 
 type CFG struct {
@@ -39,6 +45,8 @@ type SETTINGS struct {
 	Overview          bool   `json:"Overview"`
 	OverviewDir       string `json:"OverviewDir"`
 	ActiveDir         string `json:"ActiveDir"`
+	AcceptAllGroups   bool   `json:"AcceptAllGroups"`
+	AcceptMaxGroups   int    `json:"AcceptMaxGroups"`
 	StorageDir        string `json:"StorageDir"`
 	StorageXrefLinker bool   `json:"StorageXrefLinker"`
 	HashDBsqlUser     string `json:"HashDBsqlUser"`
@@ -69,6 +77,27 @@ type PEER struct {
 	R_SSL_Insecure bool   // allow connection to peer with self-signed or invalid/expired certs
 } // end type PEER
 
+func CFG_reload(timer <-chan time.Time) (newC *CFG, newT <-chan time.Time, retbool bool) {
+	// check if cfg needs reload
+	// eats and checks the timer
+	// returns retbool false or newconfig+newtimer
+	select {
+	case <-timer:
+		newC = RamCache.ReadRAM_CFG()
+		newT = CFG_reload_timer(newC)
+		retbool = true
+		if strings.HasPrefix(newC.Settings.OverviewDir, "!") {
+			newC.Settings.OverviewDir = ""
+		}
+		return newC, newT, true
+	default: // pass
+	}
+	return nil, nil, false
+} // end func cfg_reload
+
+func CFG_reload_timer(cfg *CFG) <-chan time.Time {
+	return time.After(time.Duration(cfg.Settings.Reload_CFG) * time.Second)
+}
 
 func (ram *RAM) ReadRAM_CFG() *CFG {
 	ram.mux.RLock()
@@ -97,6 +126,13 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 	numpeers := len(cfg.Peers)
 	//logf(DEBUG, "Refresh_RAM_CFG numpeers=%d", numpeers)
 
+	if cfg.Settings.AcceptMaxGroups == 0 {
+		cfg.Settings.AcceptMaxGroups = 5
+	}
+	if cfg.Settings.Reload_CFG < 60 {
+		cfg.Settings.Reload_CFG = 60
+	}
+
 	ram.mux.Lock()
 	ram.Cfg.Settings = cfg.Settings
 	ram.PeersMAP = make(map[string]PEER, numpeers)
@@ -110,11 +146,3 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 	//logf(DEBUG, "Refresh_RAM_CFG END cfg.PeersMAP=%d", len(cfg.PeersMAP))
 	return cfg, nil
 } // end func ram.Refresh_RAM_CFG
-
-/*
-func (ram *RAM) MakeRAMcache(numpeers int) {
-	ram.mux.Lock()
-	ram.PeersMAP = make(map[string]PEER, numpeers)
-	ram.mux.Unlock()
-} // end func RamCache.MakeRAMcache
-*/
