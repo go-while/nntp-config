@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	RamCache RAM
+	//RamCache RAM
 )
 
 type CFG struct {
@@ -49,6 +49,7 @@ type SETTINGS struct {
 	AcceptMaxGroups   int    `json:"AcceptMaxGroups"`
 	StorageDir        string `json:"StorageDir"`
 	StorageXrefLinker bool   `json:"StorageXrefLinker"`
+	StorageAddXref    bool   `json:"StorageAddXref"`
 	HashDBsqlUser     string `json:"HashDBsqlUser"`
 	HashDBsqlPass     string `json:"HashDBsqlPass"`
 	HashDBsqlHost     string `json:"HashDBsqlHost"`
@@ -77,13 +78,13 @@ type PEER struct {
 	R_SSL_Insecure bool   // allow connection to peer with self-signed or invalid/expired certs
 } // end type PEER
 
-func CFG_reload(timer <-chan time.Time) (newC *CFG, newT <-chan time.Time, retbool bool) {
+func CFG_reload(timer <-chan time.Time, ram *RAM) (newC *CFG, newT <-chan time.Time, retbool bool) {
 	// check if cfg needs reload
 	// eats and checks the timer
 	// returns retbool false or newconfig+newtimer
 	select {
 	case <-timer:
-		newC = RamCache.ReadRAM_CFG()
+		newC = ram.ReadRAM_CFG()
 		newT = CFG_reload_timer(newC)
 		retbool = true
 		if strings.HasPrefix(newC.Settings.OverviewDir, "!") {
@@ -124,7 +125,9 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 		return nil, fmt.Errorf("Error Refresh_RAM_CFG cfg=nil")
 	}
 	numpeers := len(cfg.Peers)
-	//logf(DEBUG, "Refresh_RAM_CFG numpeers=%d", numpeers)
+	//logf(true, "Refresh_RAM_CFG numpeers=%d", numpeers)
+	log.Printf("Refresh_RAM_CFG numpeers=%d", numpeers)
+
 
 	if cfg.Settings.AcceptMaxGroups == 0 {
 		cfg.Settings.AcceptMaxGroups = 5
