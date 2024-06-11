@@ -3,6 +3,9 @@ package config
 import (
 	"fmt"
 	"log"
+	"net"
+	"io/ioutil"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +51,7 @@ type SETTINGS struct {
 	AcceptAllGroups   bool   `json:"AcceptAllGroups"`
 	AcceptMaxGroups   int    `json:"AcceptMaxGroups"`
 	StorageDir        string `json:"StorageDir"`
+	CycBufsDir        string `json:"CycBufsDir"`
 	StorageXrefLinker bool   `json:"StorageXrefLinker"`
 	StorageAddXref    bool   `json:"StorageAddXref"`
 	HashDBsqlUser     string `json:"HashDBsqlUser"`
@@ -77,6 +81,71 @@ type PEER struct {
 	R_SSL          bool   // connect with ssl to peer
 	R_SSL_Insecure bool   // allow connection to peer with self-signed or invalid/expired certs
 } // end type PEER
+
+/*
+ *
+ * import "github.com/go-while/nntp-config"
+ *
+ * type (
+ * 	PEER     = config.PEER
+ * 	SETTINGS = config.SETTINGS
+ * 	CFG      = config.CFG
+ * 	RAM      = config.RAM
+ * )
+ *	var (
+ *		RamCache               RAM
+ * )
+ *
+ *
+ *	cfg, err := RamCache.Refresh_RAM_CFG(config.ReadConfig(true, conf_file))
+ *	if cfg == nil || err != nil {
+ *		os.Exit(1)
+ *	}
+ *
+ */
+
+func ReadConfig(DEBUG bool, filename string) (bool, *CFG, error) {
+	// first return bool is DEBUG! check error!
+	//logf(DEBUG, "ReadConfig: file='%s'", filename)
+	file, err := ioutil.ReadFile(filename)
+	if err != nil {
+		log.Printf("ERROR ReadConfig err='%v'", err)
+		return DEBUG, nil, err
+	}
+	var cfg CFG
+	err = json.Unmarshal(file, &cfg)
+	if err != nil {
+		log.Printf("ERROR ReadConfig Unmarshal err='%v'", err)
+		return DEBUG, nil, err
+	}
+	if !check_config_peers(cfg.PeersMAP) {
+		return DEBUG, nil, fmt.Errorf("ERROR !check_config_peers")
+	}
+
+	return DEBUG, &cfg, nil
+} // end func ReadConfig
+
+func check_config_peers(peers map[string]PEER) bool {
+	for hostname, peer := range peers {
+		if !StrIsIPv4(peer.Addr4) {
+			log.Printf("ERROR check_config_peers: hostname=%s !StrIsIPv4(peer.Addr4)", hostname)
+			return false
+		}
+		if !StrIsIPv6(peer.Addr6) {
+			log.Printf("ERROR check_config_peers: hostname=%s !StrIsIPv6(peer.Addr6)", hostname)
+			return false
+		}
+		if _, _, err := net.ParseCIDR(peer.Cidr4); err != nil {
+			log.Printf("ERROR check_config_peers CIDR4 hostname=%s err='%v'", hostname, err)
+			return false
+		}
+		if _, _, err := net.ParseCIDR(peer.Cidr6); err != nil {
+			log.Printf("ERROR check_config_peers CIDR6 hostname=%s err='%v'", hostname, err)
+			return false
+		}
+	}
+	return true
+} // end func check_config_peers
 
 func CFG_reload(timer <-chan time.Time, ram *RAM) (newC *CFG, newT <-chan time.Time, retbool bool) {
 	// check if cfg needs reload
@@ -149,3 +218,24 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 	//logf(DEBUG, "Refresh_RAM_CFG END cfg.PeersMAP=%d", len(cfg.PeersMAP))
 	return cfg, nil
 } // end func ram.Refresh_RAM_CFG
+
+
+func StrIsIPv4(address string) bool {
+	testInput := net.ParseIP(address)
+	if testInput.To4() != nil {
+		log.Printf("!StrIsIPv4 addr='%s'", testInput, address)
+		return false
+	}
+	return true
+} // end func StrIsIPv4
+
+func StrIsIPv6(address string) bool {
+	// !!! must use before StrIsIPv6: net.SplitHostPort(address)
+	// StrIsIPv6 works only with pure address without :port
+	if strings.Contains(address, ":") {
+		//log.Printf("StrIsIPv6 addr='%s'", address)
+		return true
+	}
+	//log.Printf("!StrIsIPv6 addr='%s'", address)
+	return false
+} // end func StrIsIPv6
