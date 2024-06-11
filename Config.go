@@ -106,7 +106,7 @@ type PEER struct {
 
 func ReadConfig(DEBUG bool, filename string) (bool, *CFG, error) {
 	// first return bool is DEBUG! check error!
-	//logf(DEBUG, "ReadConfig: file='%s'", filename)
+	//log.Printf("ReadConfig: file='%s'", filename)
 	file, err := ioutil.ReadFile(filename)
 	if err != nil {
 		log.Printf("ERROR ReadConfig err='%v'", err)
@@ -215,10 +215,9 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 	cfg.Peers = nil // we dont need this slice anymore
 	ram.mux.Unlock()
 
-	//logf(DEBUG, "Refresh_RAM_CFG END cfg.PeersMAP=%d", len(cfg.PeersMAP))
+	//log.Printf("Refresh_RAM_CFG END cfg.PeersMAP=%d", len(cfg.PeersMAP))
 	return cfg, nil
 } // end func ram.Refresh_RAM_CFG
-
 
 func StrIsIPv4(address string) bool {
 	testInput := net.ParseIP(address)
@@ -239,3 +238,284 @@ func StrIsIPv6(address string) bool {
 	//log.Printf("!StrIsIPv6 addr='%s'", address)
 	return false
 } // end func StrIsIPv6
+
+func MatchCIDR(remoteAddr string, match string) bool {
+	if match == "" {
+		return false
+	}
+	_, netstr, err := net.ParseCIDR(remoteAddr)
+	if err != nil {
+		log.Printf("ERROR CIDR netstr err='%v'", err)
+		return false
+	}
+	_, matchstr, err := net.ParseCIDR(match)
+	if err != nil {
+		log.Printf("ERROR CIDR matchstr err='%v'", err)
+		return false
+	}
+	return netstr == matchstr
+} // end func CIDR
+
+func MatchRDNS(remoteAddr string, dnsquery_limiter chan struct{}) (string, bool) {
+	// LookupAddr performs a reverse lookup for the given address,
+	// returning a list of names mapping to that address.
+	lock_dnsquery(dnsquery_limiter)
+	hosts, err := net.LookupAddr(remoteAddr)
+	if err != nil {
+		log.Printf("ERROR MatchRDNS LookupHost err='%v'", err)
+		return_dnsquery(dnsquery_limiter)
+		return "", false
+	}
+	return_dnsquery(dnsquery_limiter)
+
+	log.Printf("Try MatchHost remoteAddr='%s' => hosts='%v'", remoteAddr, hosts)
+	for _, hostname := range hosts {
+		log.Printf("Try MatchHost remoteAddr='%s' => hostname='%s'", remoteAddr, hostname)
+		if MatchHost(hostname, remoteAddr, dnsquery_limiter) {
+			log.Printf("OK MatchRDNS -> MatchHost resolved remoteAddr='%s' ==> hostname='%s'", remoteAddr, hostname)
+			return hostname, true
+		}
+	} // end for hosts
+
+	log.Printf("FAIL MatchRDNS remoteAddr=%s", remoteAddr)
+	return "", false
+} // emd matchRDNS
+
+func MatchHost(hostname string, match_remoteAddr string, dnsquery_limiter chan struct{}) bool {
+	lock_dnsquery(dnsquery_limiter)
+	defer return_dnsquery(dnsquery_limiter)
+
+	addrs, err := net.LookupHost(hostname)
+	if err != nil {
+		log.Printf("ERROR LOOKUP err='%v'")
+		return false
+	}
+	log.Printf("try MatchHost hostname=%s => remoteAddr='%s' ? dns_reply addrs='%v'", hostname, match_remoteAddr, addrs)
+	for _, addr := range addrs {
+		if addr == match_remoteAddr {
+			log.Printf("OK MatchHost resolved remoteAddr='%s' => hostname='%s' addr='%s'", match_remoteAddr, hostname, addr)
+			return true
+		}
+	} // end for LOOKUP
+	return false
+} // end func MatchHost
+
+func lock_dnsquery(dnsquery_limiter chan struct{}) {
+	if dnsquery_limiter != nil {
+		dnsquery_limiter <- struct{}{}
+	}
+}
+
+func return_dnsquery(dnsquery_limiter chan struct{}) {
+	if dnsquery_limiter != nil {
+		<-dnsquery_limiter
+	}
+}
+
+func ConnACL(DEBUG bool, cfg *CFG, conn net.Conn, force_connACL bool, dnsquery_limiter chan struct{}) (bool, *PEER) {
+
+	log.Printf("ConnACL peersMAP=%d", len(cfg.PeersMAP))
+	/*
+		func LookupAddr(addr string) (names []string, err error)
+		func LookupCNAME(host string) (cname string, err error)
+		func LookupHost(host string) (addrs []string, err error)
+		func ParseCIDR(s string) (IP, *IPNet, error)
+		func ParseIP(s string) IP
+	*/
+	remoteAddr, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		log.Printf("ERROR ConnACL err='%v'", err)
+		conn.Close()
+		return false, nil
+	}
+
+	// loop over all peers
+	// check if static ip matches
+	//  else check hostname resolver
+	ipv := 4
+	if StrIsIPv6(remoteAddr) {
+		ipv = 6
+	}
+	// every new request loops over peersmap to find matching peer.
+	// TODO create maps for quick access for ip4|ip6 => peerid
+	for _, peer := range cfg.PeersMAP {
+		if !peer.Enabled {
+			//log.Printf("IGNORE ConnACL !peer.Enabled hostname=%s", peer.Hostname)
+			continue
+		}
+		if peer.Addr4 == "" && peer.Addr6 == "" && peer.Cidr4 == "" && peer.Cidr6 == "" {
+			//log.Printf("IGNORE ConnACL hostname=%s peer.Addr+Cidr empty", peer.Hostname)
+			continue
+		}
+		switch ipv {
+		case 4:
+			if remoteAddr == peer.Addr4 {
+				return true, &peer
+			}
+			if MatchCIDR(remoteAddr, peer.Cidr4) {
+				return true, &peer
+			}
+
+		case 6:
+			if remoteAddr == peer.Addr6 {
+				return true, &peer
+			}
+			if MatchCIDR(remoteAddr, peer.Cidr6) {
+				return true, &peer
+			}
+
+		} // end switch switch(ipv)
+
+		//log.Printf("ConnACL nomatch remoteAddr='%s' try next peer", remoteAddr)
+
+		//log.Printf("connACL no match, try next: remoteAddr='%s' ipv%d vs. hostname=%s 6='%s' 4='%s'", remoteAddr, ipv, hostname, peer.Addr6, peer.Addr4) // spammy
+	} // end for peers
+
+	// static ip did not match any Peer.Hostname
+	if hostname, retbool := MatchRDNS(remoteAddr, dnsquery_limiter); retbool == true {
+		peer := cfg.PeersMAP[hostname]
+		if peer.Hostname == hostname {
+			return true, &peer
+		} else {
+			log.Printf("cfg.PeersMAP[hostname='%s'] not found", hostname)
+		}
+	}
+	if force_connACL {
+		log.Printf("ConnACL denied remoteAddr='%s'", remoteAddr)
+		conn.Close()
+	}
+	return false, nil
+} // end func ConnACL
+
+func RemoteAddr(conn net.Conn) string {
+	remoteAddr, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		log.Printf("ERROR SRV.AddConn net.SplitHostPort err='%v'", err)
+		conn.Close()
+		return ""
+	}
+	return remoteAddr
+} // end func RemoteAddr
+
+/*
+func ListenSSL(DEBUG bool, cfg *CFG, port string) {
+	if cfg == nil || port == "" {
+		return
+	}
+	ssl, err := tls.LoadX509KeyPair(cfg.Settings.SSL_CRT, cfg.Settings.SSL_KEY)
+	if err != nil {
+		log.Printf("ERROR tls.LoadX509KeyPair err='%v'", err)
+		os.Exit(1)
+	}
+	ssl_conf := &tls.Config{
+		Certificates: []tls.Certificate{ssl},
+		//MinVersion: tls.VersionTLS12,
+		//MaxVersion: tls.VersionTLS13,
+	}
+	listener_ssl, err := tls.Listen(cfg.Settings.Daemon_TCP, cfg.Settings.Daemon_Host+":"+port, ssl_conf)
+	if err != nil {
+		log.Printf("ERROR SSL err='%v'", err)
+		return
+	}
+	defer listener_ssl.Close()
+	log.Printf("Listen SSL: %s:%s", cfg.Settings.Daemon_Host, port)
+	timer := CFG_reload_timer(cfg)
+	force_connACL := true
+listener:
+	for {
+		conn, err := listener_ssl.Accept()
+		if err != nil {
+			log.Printf("ERROR listener_ssl err='%v'", err)
+			continue listener
+		}
+		// new incoming SSL connection
+		ConnExtendReadDeadline(conn, 60)
+		//if !Conn_Check(cfg, conn) {
+		//	continue listener
+		//}
+		// check if cfg needs refresh from ram
+		if newC, newT, retbool := CFG_reload(timer, &RamCache); retbool == true && newC != nil {
+			cfg, timer = newC, newT
+			DEBUG = cfg.Settings.Debug_Daemon
+		}
+		switch cfg.Settings.Json_AuthFile {
+		case "":
+			force_connACL = true
+		default:
+			force_connACL = false
+		}
+
+		if force_connACL {
+			// check connACL
+			if retbool, peer := ConnACL(DEBUG, cfg, conn, force_connACL, dnsquery_limiter); !retbool {
+				// connacl denied
+				continue listener
+			} else {
+				// incoming SSL conn passed ACL
+				go SRV.HandleRequest(SRV.NewSession(conn, peer, cfg), cfg)
+			}
+		} else {
+			_, peer := ConnACL(DEBUG, cfg, conn, force_connACL, dnsquery_limiter)
+			go SRV.HandleRequest(SRV.NewSession(conn, peer, cfg), cfg)
+		}
+
+	} // end for listener_ssl
+	//logf(DEBUG, "SSL listener_ssl closed %s", cfg.Settings.Daemon_Host)
+} // end func ListenSSL
+
+func ListenTCP(DEBUG bool, cfg *CFG, port string) {
+	if cfg == nil || port == "" {
+		return
+	}
+	var conn net.Conn
+	var err error
+	listener_tcp, err := net.Listen(cfg.Settings.Daemon_TCP, cfg.Settings.Daemon_Host+":"+port)
+	if err != nil {
+		log.Printf("ERROR TCP err='%v'", err)
+		os.Exit(1)
+	}
+	defer listener_tcp.Close()
+	log.Printf("Listen TCP: %s:%s", cfg.Settings.Daemon_Host, port)
+	timer := CFG_reload_timer(cfg)
+	force_connACL := true
+listener:
+	for {
+		if conn, err = listener_tcp.Accept(); err != nil {
+			log.Printf("ERROR listener_tcp err='%v'", err)
+			continue listener
+		}
+		ConnExtendReadDeadline(conn, 60)
+		// new incoming TCP connection
+		//if !Conn_Check(cfg, conn) {
+		//	continue listener
+		//}
+		// check if cfg needs refresh from ram
+		if newC, newT, retbool := CFG_reload(timer, &RamCache); retbool == true && newC != nil {
+			log.Printf("TCP: REFRESH CFG <- RAM")
+			cfg, timer = newC, newT
+			DEBUG = cfg.Settings.Debug_Daemon
+		}
+		switch cfg.Settings.Json_AuthFile {
+		case "":
+			force_connACL = true
+		default:
+			force_connACL = false
+		}
+
+		if force_connACL {
+			// check connACL
+			if retbool, peer := ConnACL(DEBUG, cfg, conn, force_connACL, dnsquery_limiter); !retbool {
+				// connACL denied
+				continue listener
+			} else {
+				// incoming TCP conn passed ACL
+				go SRV.HandleRequest(SRV.NewSession(conn, peer, cfg), cfg)
+			}
+		} else {
+			_, peer := ConnACL(DEBUG, cfg, conn, force_connACL, dnsquery_limiter)
+			go SRV.HandleRequest(SRV.NewSession(conn, peer, cfg), cfg)
+		}
+	} // end for listener_tcp
+	//logf(DEBUG, "TCP listener_tcp closed %s", cfg.Settings.Daemon_Host)
+} // end func TCP
+*/
