@@ -104,25 +104,25 @@ type PEER struct {
  *
  */
 
-func ReadConfig(DEBUG bool, filename string) (bool, *CFG, error) {
+func ReadConfig(DEBUG bool, filename string, oldcfg *CFG) (bool, *CFG, *CFG, error) {
 	// first return bool is DEBUG! check error!
 	//log.Printf("ReadConfig: file='%s'", filename)
 	file, err := ioutil.ReadFile(filename)
 	if err != nil {
 		log.Printf("ERROR ReadConfig err='%v'", err)
-		return DEBUG, nil, err
+		return DEBUG, nil, nil, err
 	}
 	var cfg CFG
 	err = json.Unmarshal(file, &cfg)
 	if err != nil {
 		log.Printf("ERROR ReadConfig Unmarshal err='%v'", err)
-		return DEBUG, nil, err
+		return DEBUG, nil, nil, err
 	}
 	if !check_config_peers(cfg.PeersMAP) {
-		return DEBUG, nil, fmt.Errorf("ERROR !check_config_peers")
+		return DEBUG, nil, nil, fmt.Errorf("ERROR !check_config_peers")
 	}
 
-	return DEBUG, &cfg, nil
+	return DEBUG, &cfg, oldcfg, nil
 } // end func ReadConfig
 
 func check_config_peers(peers map[string]PEER) bool {
@@ -185,7 +185,7 @@ func (ram *RAM) ReadRAM_PEER(hostname string) PEER {
 	return peer
 } // end func ram.ReadRAM_PEER
 
-func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
+func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, oldcfg *CFG, err error) (*CFG, error) {
 	if err != nil {
 		log.Printf("ERROR Refresh_RAM_CFG caller err='%v'", err)
 		return nil, err
@@ -194,9 +194,13 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 		return nil, fmt.Errorf("Error Refresh_RAM_CFG cfg=nil")
 	}
 	numpeers := len(cfg.Peers)
-	//logf(true, "Refresh_RAM_CFG numpeers=%d", numpeers)
-	log.Printf("Refresh_RAM_CFG numpeers=%d", numpeers)
-
+	oldlen := 0
+	if oldcfg != nil {
+		oldlen = len(oldcfg.PeersMAP)
+		if oldlen != numpeers {
+			log.Printf("Refresh_RAM_CFG numpeers=%d oldlen=%d", numpeers, oldlen)
+		}
+	}
 
 	if cfg.Settings.AcceptMaxGroups == 0 {
 		cfg.Settings.AcceptMaxGroups = 5
@@ -212,6 +216,7 @@ func (ram *RAM) Refresh_RAM_CFG(DEBUG bool, cfg *CFG, err error) (*CFG, error) {
 		ram.PeersMAP[peer.Hostname] = peer
 	}
 	cfg.PeersMAP = ram.PeersMAP
+	//log.Printf("cfg.PeersMAP='%v'", cfg.PeersMAP)
 	cfg.Peers = nil // we dont need this slice anymore
 	ram.mux.Unlock()
 
@@ -268,11 +273,11 @@ func MatchRDNS(remoteAddr string, dnsquery_limiter chan struct{}) (string, bool)
 	}
 	return_dnsquery(dnsquery_limiter)
 
-	log.Printf("Try MatchHost remoteAddr='%s' => hosts='%v'", remoteAddr, hosts)
+	//log.Printf("Try MatchHost remoteAddr='%s' => hosts='%v'", remoteAddr, hosts)
 	for _, hostname := range hosts {
-		log.Printf("Try MatchHost remoteAddr='%s' => hostname='%s'", remoteAddr, hostname)
+		//log.Printf("Try MatchHost remoteAddr='%s' => hostname='%s'", remoteAddr, hostname)
 		if MatchHost(hostname, remoteAddr, dnsquery_limiter) {
-			log.Printf("OK MatchRDNS -> MatchHost resolved remoteAddr='%s' ==> hostname='%s'", remoteAddr, hostname)
+			//log.Printf("OK MatchRDNS -> MatchHost resolved remoteAddr='%s' ==> hostname='%s'", remoteAddr, hostname)
 			return hostname, true
 		}
 	} // end for hosts
@@ -290,13 +295,14 @@ func MatchHost(hostname string, match_remoteAddr string, dnsquery_limiter chan s
 		log.Printf("ERROR LOOKUP err='%v'")
 		return false
 	}
-	log.Printf("try MatchHost hostname=%s => remoteAddr='%s' ? dns_reply addrs='%v'", hostname, match_remoteAddr, addrs)
+	//log.Printf("Try MatchHost hostname=%s => remoteAddr='%s' ? dns_reply addrs='%v'", hostname, match_remoteAddr, addrs)
 	for _, addr := range addrs {
 		if addr == match_remoteAddr {
-			log.Printf("OK MatchHost resolved remoteAddr='%s' => hostname='%s' addr='%s'", match_remoteAddr, hostname, addr)
+			//log.Printf("OK MatchHost resolved remoteAddr='%s' => hostname='%s' addr='%s'", match_remoteAddr, hostname, addr)
 			return true
 		}
 	} // end for LOOKUP
+	//log.Printf("WARN MatchHost resolved remoteAddr='%s' => hostname='%s' addr='%s'", match_remoteAddr, hostname, addr)
 	return false
 } // end func MatchHost
 
@@ -314,7 +320,8 @@ func return_dnsquery(dnsquery_limiter chan struct{}) {
 
 func ConnACL(DEBUG bool, cfg *CFG, conn net.Conn, force_connACL bool, dnsquery_limiter chan struct{}) (bool, *PEER) {
 
-	log.Printf("ConnACL peersMAP=%d", len(cfg.PeersMAP))
+	//log.Printf("ConnACL peersMAP=%d", len(cfg.PeersMAP))
+
 	/*
 		func LookupAddr(addr string) (names []string, err error)
 		func LookupCNAME(host string) (cname string, err error)
@@ -375,9 +382,10 @@ func ConnACL(DEBUG bool, cfg *CFG, conn net.Conn, force_connACL bool, dnsquery_l
 	if hostname, retbool := MatchRDNS(remoteAddr, dnsquery_limiter); retbool == true {
 		peer := cfg.PeersMAP[hostname]
 		if peer.Hostname == hostname {
+			log.Printf("ConnACL OK cfg.PeersMAP[hostname='%s']", hostname)
 			return true, &peer
 		} else {
-			log.Printf("cfg.PeersMAP[hostname='%s'] not found", hostname)
+			//log.Printf("ConnACL not found cfg.PeersMAP[hostname='%s']", hostname)
 		}
 	}
 	if force_connACL {
