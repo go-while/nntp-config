@@ -5,15 +5,15 @@ import (
 	"log"
 	"net"
 	//"net/netip"
-	"io/ioutil"
 	"encoding/json"
+	"io/ioutil"
 	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	//RamCache RAM
+//RamCache RAM
 )
 
 type CFG struct {
@@ -29,7 +29,7 @@ type RAM struct {
 } // end type RAM
 
 type SETTINGS struct {
-	Hostname string   `json:"Hostname"`
+	Hostname string `json:"Hostname"`
 	//Max_Workers       int    `json:"Max_Workers"`
 	Reload_CFG        int64  `json:"Reload_CFG"`
 	DelayConn         int64  `json:"DelayConn"`
@@ -349,10 +349,10 @@ func ConnACL(DEBUG bool, cfg *CFG, conn net.Conn, force_connACL bool, dnsquery_l
 	// check if static ip matches
 	//  else check hostname resolver
 	/*
-	ipv := 4
-	if StrIsIPv6(remoteAddr) {
-		ipv = 6
-	}
+		ipv := 4
+		if StrIsIPv6(remoteAddr) {
+			ipv = 6
+		}
 	*/
 	// every new request loops over peersmap to find matching peer.
 	// TODO create maps for quick access for ip4|ip6 => peerid
