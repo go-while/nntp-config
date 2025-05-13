@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	//"net/netip"
 	"io/ioutil"
 	"encoding/json"
 	"strings"
@@ -28,7 +29,7 @@ type RAM struct {
 } // end type RAM
 
 type SETTINGS struct {
-	Hostname string `json:"Hostname"`
+	Hostname string   `json:"Hostname"`
 	//Max_Workers       int    `json:"Max_Workers"`
 	Reload_CFG        int64  `json:"Reload_CFG"`
 	DelayConn         int64  `json:"DelayConn"`
@@ -244,22 +245,19 @@ func StrIsIPv6(address string) bool {
 	return false
 } // end func StrIsIPv6
 
-func MatchCIDR(remoteAddr string, match string) bool {
-	if match == "" {
-		return false
+func MatchCIDR(remoteAddr string, matchCIDR string) (bool, error) {
+	ip := net.ParseIP(remoteAddr)
+	if ip == nil {
+		return false, fmt.Errorf("invalid IP address: %s", remoteAddr)
 	}
-	_, netstr, err := net.ParseCIDR(remoteAddr)
+
+	_, ipNet, err := net.ParseCIDR(matchCIDR)
 	if err != nil {
-		log.Printf("ERROR CIDR netstr err='%v'", err)
-		return false
+		return false, fmt.Errorf("invalid CIDR block: %s", matchCIDR)
 	}
-	_, matchstr, err := net.ParseCIDR(match)
-	if err != nil {
-		log.Printf("ERROR CIDR matchstr err='%v'", err)
-		return false
-	}
-	return netstr == matchstr
-} // end func CIDR
+
+	return ipNet.Contains(ip), nil
+} // end func MatchCIDR: fully written by AI
 
 func MatchRDNS(remoteAddr string, dnsquery_limiter chan struct{}) (string, bool) {
 	// LookupAddr performs a reverse lookup for the given address,
@@ -329,20 +327,33 @@ func ConnACL(DEBUG bool, cfg *CFG, conn net.Conn, force_connACL bool, dnsquery_l
 		func ParseCIDR(s string) (IP, *IPNet, error)
 		func ParseIP(s string) IP
 	*/
+	ipv6 := false
+
 	remoteAddr, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {
 		log.Printf("ERROR ConnACL err='%v'", err)
 		conn.Close()
 		return false, nil
 	}
+	testv4 := net.ParseIP(remoteAddr)
+	if testv4.To4() == nil {
+		testv6 := net.ParseIP(remoteAddr)
+		if testv6.To16() == nil {
+			log.Printf("ERROR ConnACL net.ParseIP v4 or v6 failed")
+			return false, nil
+		}
+		ipv6 = true
+	}
 
 	// loop over all peers
 	// check if static ip matches
 	//  else check hostname resolver
+	/*
 	ipv := 4
 	if StrIsIPv6(remoteAddr) {
 		ipv = 6
 	}
+	*/
 	// every new request loops over peersmap to find matching peer.
 	// TODO create maps for quick access for ip4|ip6 => peerid
 	for _, peer := range cfg.PeersMAP {
@@ -354,21 +365,25 @@ func ConnACL(DEBUG bool, cfg *CFG, conn net.Conn, force_connACL bool, dnsquery_l
 			//log.Printf("IGNORE ConnACL hostname=%s peer.Addr+Cidr empty", peer.Hostname)
 			continue
 		}
-		switch ipv {
-		case 4:
+		switch ipv6 {
+		case false:
 			if remoteAddr == peer.Addr4 {
 				return true, &peer
 			}
-			if MatchCIDR(remoteAddr, peer.Cidr4) {
-				return true, &peer
+			if peer.Cidr4 != "" {
+				if retbool, err := MatchCIDR(remoteAddr, peer.Cidr4); retbool && err == nil {
+					return true, &peer
+				}
 			}
 
-		case 6:
+		case true:
 			if remoteAddr == peer.Addr6 {
 				return true, &peer
 			}
-			if MatchCIDR(remoteAddr, peer.Cidr6) {
-				return true, &peer
+			if peer.Cidr6 != "" {
+				if retbool, err := MatchCIDR(remoteAddr, peer.Cidr6); retbool && err == nil {
+					return true, &peer
+				}
 			}
 
 		} // end switch switch(ipv)
